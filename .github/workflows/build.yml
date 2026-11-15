@@ -106,6 +106,7 @@ jobs:
 
           git -C umd apply "$GITHUB_WORKSPACE/patches/umd-fallback-luid.patch"
           git -C umd apply "$GITHUB_WORKSPACE/patches/umd-ddi-table-init.patch"
+          git -C umd apply "$GITHUB_WORKSPACE/patches/triton-rgb32-clamp.patch"
           git -C umd apply "$GITHUB_WORKSPACE/patches/triton-d3d11-0-only.patch"
           git -C umd/thirdparty/dxvk apply "$GITHUB_WORKSPACE/patches/dxvk-relax-required.patch"
 

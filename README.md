@@ -52,6 +52,12 @@ table size plus key function pointers before `CreateDevice` returns. This is
 for the `DXGI_ERROR_DRIVER_INTERNAL_ERROR (0x887A0020)` bring-up
 investigation.
 
+`patches/triton-rgb32-clamp.patch` clears render-target, blend, and MSAA bits
+for the `R32G32B32_*` family (DXGI formats 5-8). D3D11 does not allow those
+formats as RTV/MSAA targets; the runtime otherwise rejects device finalization
+with `DXGI_ERROR_DRIVER_INTERNAL_ERROR (0x887A0020)` right after the format-7
+check.
+
 `patches/triton-d3d11-0-only.patch` clamps Triton's advertised DDI versions to
 D3D11.0. The UMD's common device-function assignments use the D3D11.0 table
 layout, so advertising D3D11.1 makes the runtime select the 11.1 table and the
