@@ -19,23 +19,38 @@ Windows SDK/WDK headers**. The workflow fetches them at build time:
 
 ## Current validation state (2026-11-15)
 
-Build run 43749569277 produced `dx11um_virtio.dll` SHA-256
-`cc79360ac06909fa63ef09055f679c31f427bea70fff766fc62d3e42673d7d2e`.
-On the Mali-G2-Ultra / PanVK guest, with a direct
-`cmd /c "set DXVK_UMD_RELAX_REQUIRED=mali&& ..."` launch:
+Build run `43758177235` (artifact `dx11um-virtio-exp-9`) produced
+`dx11um_virtio.dll` SHA-256
+`0a4dfc0ab43deb7e2afe312d99b2ff35e55176763a9caf1d560f5a9da7443c19`.
+This build defaults `DXVK_UMD_RELAX_REQUIRED` to `mali` when the variable is
+empty; `strict`/`none` restores upstream behavior.
 
-- DXVK enumerates the Mali device and no longer rejects it on required
-  features or `VK_KHR_swapchain`.
-- The UMD handles the PanVK/KMD LUID mismatch by using the first DXGI adapter,
-  and the runtime selects D3D11.0 after the Triton DDI clamp.
-- The test then fastfails (`0xC0000409`) inside the PanVK ICD
-  (`vulkan_virtio.dll`, offset `+0x6FA46C`) before printing a D3D11 result.
-  A separate compute probe pins this to PanVK's pipeline compiler
-  (`vkCreateComputePipelines` fastfail, `brk #0xf003`), not to the UMD.
+Offscreen D3D11 validation (artifact `fb6be454...`, explicit `mali`):
+default, 10_0, 10_1 and 11_0 all returned `hr=0x00000000`; the 256x256 RTV
+clear + staging readback returned pixel `64/128/191/255` and `RESULT: PASS`.
+The earlier `0x887A0020` came from the runtime's format-7
+(`DXGI_FORMAT_R32G32B32_UINT`) check: the DDI mask advertised RENDER_TARGET,
+BLENDABLE and MSAA bits that D3D11 forbids for the R32G32B32 family. The
+`triton-rgb32-clamp.patch` clears those bits; the runtime then finishes device
+finalization.
 
-The remaining blocker is therefore upstream PanVK shader compilation, pending
-the Panfrost bitfield-patch rebase. This repository does not claim a working
-D3D11 rendering stack yet.
+DWM system-level validation (artifact9, default `mali`): DWM successfully
+creates the DXVK device (`Found device`, `internal D3D11CreateDevice returned`,
+D3D11.0 DDI), but its shared-texture path fails with:
+
+```text
+create_shared_vk_image: Failed to allocate Vulkan memory: ERROR_INVALID_EXTERNAL_HANDLE
+virtio_wddm_create_resource: failed to create shared blob texture: 0x8007000e
+Triton: tritonSetError_impl: virtio_wddm_create_resource: 0x8007000e
+```
+
+DWM then crashes in `dwmcore.dll` (`0xC00001AD`); LogonUI also crashes in
+`Windows.UI.Xaml.dll` (`0xC000027B`). Host crosvm logged 4 MiB/10 MiB GPU blobs,
+followed by `Failed to unlock and post for surface scanout` and a GPU reset
+with the scanout surface dropped. The offscreen path works; the remaining
+system-level blocker is the PanVK/UMD external-memory shared-blob path
+(`VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_KMT_BIT`), not D3D11 device
+creation.
 
 ## What the patches change
 
@@ -46,10 +61,10 @@ bring-up workaround; it does not change the multi-adapter path when the LUID
 matches.
 
 `patches/umd-ddi-table-init.patch` zeroes the runtime-supplied device-function
-table before filling it, installs stubs for the two entries Triton leaves
-unassigned (`pfnResetPrimitiveID`, `pfnSetVertexPipelineOutput`), and logs the
-table size plus key function pointers before `CreateDevice` returns. This is
-for the `DXGI_ERROR_DRIVER_INTERNAL_ERROR (0x887A0020)` bring-up
+table before filling it and logs the table size, key function pointers, the
+deferred-context/command-list slots, and the Triton base object pointers before
+`CreateDevice` returns. It also turns the Triton format/MSAA diagnostics on.
+This is for the `DXGI_ERROR_DRIVER_INTERNAL_ERROR (0x887A0020)` bring-up
 investigation.
 
 `patches/triton-rgb32-clamp.patch` clears render-target, blend, and MSAA bits
