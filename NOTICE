@@ -18,7 +18,9 @@ Components fetched at build time and their licenses:
 
 The built dx11um_virtio.dll combines the AGPL-3.0 UMD with the zlib DXVK.
 Anyone redistributing the artifact must comply with the AGPL-3.0 and the other
-applicable licenses.
+applicable licenses. The UMD patch in this repository is a modification of the
+AGPL-3.0 UMD source and is provided under the same AGPL-3.0 terms; the DXVK
+patch is provided under the zlib license.
 
 This repository and its artifacts are experimental, provided "as is", without
 warranty of any kind. They are not official DroidVM builds.

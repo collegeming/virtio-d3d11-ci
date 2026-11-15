@@ -17,7 +17,13 @@ Windows SDK/WDK headers**. The workflow fetches them at build time:
   uploaded.
 - Toolchain: llvm-mingw Linux release and Khronos glslang Linux release.
 
-## What the patch changes
+## What the patches change
+
+`patches/umd-fallback-luid.patch` changes the UMD's adapter selection: if
+`IDXGIFactory4::EnumAdapterByLuid` fails because PanVK's Vulkan LUID differs
+from the KMD LUID, the UMD uses DXGI adapter 0. This is a single-adapter
+bring-up workaround; it does not change the multi-adapter path when the LUID
+matches.
 
 `patches/dxvk-relax-required.patch` adds an opt-in relaxation to
 `src/dxvk/dxvk_device_info.cpp`:

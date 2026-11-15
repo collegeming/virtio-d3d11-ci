@@ -1,0 +1,29 @@
+diff --git a/device.c b/device.c
+index 25c3e5d..ce8646a 100644
+--- a/device.c
++++ b/device.c
+@@ -559,10 +559,20 @@ HRESULT APIENTRY virtio_wddm_create_device(D3D10DDI_HADAPTER hAdapter, D3D10DDIA
+          adapter->luid.HighPart, adapter->luid.LowPart);
+     hr = IDXGIFactory4_EnumAdapterByLuid(factory, adapter->luid, &IID_IDXGIAdapter, (void **) &device->adapter);
+     if (FAILED(hr)) {
+-        ERROR("Failed to enum DXVK DXGI adapter by LUID %lx-%lx: 0x%x",
+-              adapter->luid.HighPart, adapter->luid.LowPart, hr);
+-        IDXGIFactory4_Release(factory);
+-        return hr;
++        /* PanVK currently reports a Vulkan device LUID that differs from the
++         * LUID the KMD assigns to the same adapter.  This bring-up path has a
++         * single hardware adapter, so fall back to adapter 0 instead of
++         * failing device creation. */
++        IDXGIAdapter1 *fallback = NULL;
++        HRESULT fallback_hr = IDXGIFactory1_EnumAdapters1((IDXGIFactory1 *) factory, 0, &fallback);
++        if (FAILED(fallback_hr)) {
++            ERROR("Failed to enum DXVK DXGI adapter by LUID %lx-%lx: 0x%x (fallback: 0x%x)",
++                  adapter->luid.HighPart, adapter->luid.LowPart, hr, fallback_hr);
++            IDXGIFactory4_Release(factory);
++            return fallback_hr;
++        }
++        INFO("%s: LUID mismatch, using first DXVK adapter %p", __FUNCTION__, fallback);
++        device->adapter = (IDXGIAdapter *) fallback;
+     }
+     INFO("%s: DXVK adapter=%p", __FUNCTION__, device->adapter);
+     IDXGIFactory4_Release(factory);

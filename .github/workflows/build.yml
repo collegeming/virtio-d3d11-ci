@@ -103,6 +103,7 @@ jobs:
           cp umd/include/winddk/d3d12TokenizedProgramFormat.hpp \
              umd/include/winddk/d3d12tokenizedprogramformat.hpp
 
+          git -C umd apply "$GITHUB_WORKSPACE/patches/umd-fallback-luid.patch"
           git -C umd/thirdparty/dxvk apply "$GITHUB_WORKSPACE/patches/dxvk-relax-required.patch"
 
           # Drop large inputs; build needs only the extracted toolchain.
