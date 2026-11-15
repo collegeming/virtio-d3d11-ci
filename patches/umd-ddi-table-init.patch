@@ -1,5 +1,5 @@
 diff --git a/device.c b/device.c
-index ce8646a..cdc5000 100644
+index ce8646a..9c29540 100644
 --- a/device.c
 +++ b/device.c
 @@ -734,22 +734,27 @@ HRESULT APIENTRY virtio_wddm_create_device(D3D10DDI_HADAPTER hAdapter, D3D10DDIA
@@ -30,7 +30,7 @@ index ce8646a..cdc5000 100644
              tritonFillWDDM2_1DeviceFuncs(pArgs->pWDDM2_1DeviceFuncs);
              pArgs->pWDDM2_1DeviceFuncs->pfnDestroyDevice = virtio_wddm_destroy_device;
              break;
-@@ -787,6 +792,33 @@ HRESULT APIENTRY virtio_wddm_create_device(D3D10DDI_HADAPTER hAdapter, D3D10DDIA
+@@ -787,6 +792,46 @@ HRESULT APIENTRY virtio_wddm_create_device(D3D10DDI_HADAPTER hAdapter, D3D10DDIA
          pArgs->DXGIBaseDDI.pDXGIDDIBaseFunctions2->pfnResolveSharedResource    = virtio_wddm_resolve_shared_resource;
      }
  
@@ -61,6 +61,58 @@ index ce8646a..cdc5000 100644
 +         (void *) pArgs->p11DeviceFuncs->pfnCheckFormatSupport,
 +         (void *) pArgs->p11DeviceFuncs->pfnCheckMultisampleQualityLevels,
 +         (void *) pArgs->p11DeviceFuncs->pfnDestroyDevice);
++    INFO("funcs dc=%p calcDC=%p createDC=%p cmdExec=%p createCL=%p destroyCL=%p relocate=%p",
++         (void *) pArgs->p11DeviceFuncs->pfnCheckDeferredContextHandleSizes,
++         (void *) pArgs->p11DeviceFuncs->pfnCalcPrivateDeferredContextSize,
++         (void *) pArgs->p11DeviceFuncs->pfnCreateDeferredContext,
++         (void *) pArgs->p11DeviceFuncs->pfnCommandListExecute,
++         (void *) pArgs->p11DeviceFuncs->pfnCreateCommandList,
++         (void *) pArgs->p11DeviceFuncs->pfnDestroyCommandList,
++         (void *) pArgs->p11DeviceFuncs->pfnRelocateDeviceFuncs);
++    INFO("base pDev1=%p pDev2=%p pDev3=%p pDev5=%p pCtx1=%p pCtx2=%p pCtx3=%p pCtx4=%p",
++         (void *) device->base.pDev1, (void *) device->base.pDev2,
++         (void *) device->base.pDev3, (void *) device->base.pDev5,
++         (void *) device->base.pCtx1, (void *) device->base.pCtx2,
++         (void *) device->base.pCtx3, (void *) device->base.pCtx4);
      failed_device = NULL;
      return S_OK;
      //return DXGI_STATUS_NO_REDIRECTION;
+diff --git a/thirdparty/triton/src/virtio/neptune/triton/tritonDDI.c b/thirdparty/triton/src/virtio/neptune/triton/tritonDDI.c
+index 92cab35..ab917ca 100644
+--- a/thirdparty/triton/src/virtio/neptune/triton/tritonDDI.c
++++ b/thirdparty/triton/src/virtio/neptune/triton/tritonDDI.c
+@@ -331,7 +331,11 @@ DEFINE_TRITON_STUB_VOID(GsSetShaderWithIfaces)
+ DEFINE_TRITON_STUB_VOID(HsSetShaderWithIfaces)
+ DEFINE_TRITON_STUB_VOID(DsSetShaderWithIfaces)
+ DEFINE_TRITON_STUB_VOID(CsSetShaderWithIfaces)
+-DEFINE_TRITON_STUB_VOID(RelocateDeviceFuncs)
++static void APIENTRY tritonRelocateDeviceFuncs(D3D10DDI_HDEVICE hDevice)
++{
++    (void) hDevice;
++    TR_LOG("RelocateDeviceFuncs called");
++}
+ DEFINE_TRITON_STUB_VOID(SetTextFilterSize)
+ DEFINE_TRITON_STUB_VOID(ResourceConvert)
+ DEFINE_TRITON_STUB_VOID(ResourceConvertRegion)
+diff --git a/thirdparty/triton/src/virtio/neptune/triton/tritonQuery.c b/thirdparty/triton/src/virtio/neptune/triton/tritonQuery.c
+index 6caf28d..38ee38a 100644
+--- a/thirdparty/triton/src/virtio/neptune/triton/tritonQuery.c
++++ b/thirdparty/triton/src/virtio/neptune/triton/tritonQuery.c
+@@ -528,7 +528,7 @@ tritonCheckFormatSupport(D3D10DDI_HDEVICE hDevice, DXGI_FORMAT Format, UINT *pOu
+              tritonMsaaFamilyQuality(pD, Format, 4) > 0)
+         *pOut |= D3D10_DDI_FORMAT_SUPPORT_MULTISAMPLE_LOAD;
+ 
+-    TR_LOG_HOT("CheckFormatSupport fmt=%u -> ddi=0x%08x (host s1=0x%08x s2=0x%08x)",
++    TR_LOG("CheckFormatSupport fmt=%u -> ddi=0x%08x (host s1=0x%08x s2=0x%08x)",
+            (UINT)Format, *pOut, s1, s2);
+     if ((UINT)Format < 256u)
+         InterlockedExchange(&s_fmtCache[Format],
+@@ -552,7 +552,7 @@ tritonCheckMultisampleQualityLevels(D3D10DDI_HDEVICE hDevice, DXGI_FORMAT Format
+         *pNumQualityLevels = (SampleCount <= 1 && support) ? 1 : 0;
+     else
+         *pNumQualityLevels = tritonMsaaQuality(pD, Format, SampleCount);
+-    TR_LOG_HOT("CheckMSQL fmt=%u samples=%u -> q=%u",
++    TR_LOG("CheckMSQL fmt=%u samples=%u -> q=%u",
+            (UINT)Format, SampleCount, *pNumQualityLevels);
+ }
+ 
