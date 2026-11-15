@@ -1,43 +1,18 @@
 diff --git a/device.c b/device.c
-index ce8646a..99f8308 100644
+index ce8646a..cdc5000 100644
 --- a/device.c
 +++ b/device.c
-@@ -15,6 +15,20 @@
- 
- #include "dxvk.h"
- 
-+static void APIENTRY umd_stub_reset_primitive_id(D3D10DDI_HDEVICE hDevice, BOOL bEnable)
-+{
-+    (void) hDevice;
-+    (void) bEnable;
-+}
-+
-+static void APIENTRY umd_stub_set_vertex_pipeline_output(
-+        D3D10DDI_HDEVICE hDevice,
-+        const D3D10DDIARG_VERTEXPIPELINEOUTPUT *pOutput)
-+{
-+    (void) hDevice;
-+    (void) pOutput;
-+}
-+
- __thread VIRTIO_WDDM_RuntimeAllocRecord virtio_wddm_last_runtime_alloc;
- __thread VIRTIO_WDDM_RuntimeAllocScope virtio_wddm_runtime_alloc_scope;
- 
-@@ -734,22 +748,31 @@ HRESULT APIENTRY virtio_wddm_create_device(D3D10DDI_HADAPTER hAdapter, D3D10DDIA
+@@ -734,22 +734,27 @@ HRESULT APIENTRY virtio_wddm_create_device(D3D10DDI_HADAPTER hAdapter, D3D10DDIA
  
      switch (pArgs->Interface) {
          case D3D11_0_DDI_INTERFACE_VERSION:
 +            memset(pArgs->p11DeviceFuncs, 0, sizeof(*pArgs->p11DeviceFuncs));
              tritonFillD3D11DeviceFuncs(pArgs->p11DeviceFuncs);
-+            pArgs->p11DeviceFuncs->pfnResetPrimitiveID = umd_stub_reset_primitive_id;
-+            pArgs->p11DeviceFuncs->pfnSetVertexPipelineOutput = umd_stub_set_vertex_pipeline_output;
              pArgs->p11DeviceFuncs->pfnDestroyDevice = virtio_wddm_destroy_device;
              break;
          case D3D11_1_DDI_INTERFACE_VERSION:
 +            memset(pArgs->p11_1DeviceFuncs, 0, sizeof(*pArgs->p11_1DeviceFuncs));
              tritonFillD3D11_1DeviceFuncs(pArgs->p11_1DeviceFuncs);
-+            pArgs->p11_1DeviceFuncs->pfnResetPrimitiveID = umd_stub_reset_primitive_id;
-+            pArgs->p11_1DeviceFuncs->pfnSetVertexPipelineOutput = umd_stub_set_vertex_pipeline_output;
              pArgs->p11_1DeviceFuncs->pfnDestroyDevice = virtio_wddm_destroy_device;
              break;
          case D3DWDDM1_3_DDI_INTERFACE_VERSION:
@@ -55,7 +30,7 @@ index ce8646a..99f8308 100644
              tritonFillWDDM2_1DeviceFuncs(pArgs->pWDDM2_1DeviceFuncs);
              pArgs->pWDDM2_1DeviceFuncs->pfnDestroyDevice = virtio_wddm_destroy_device;
              break;
-@@ -787,6 +810,33 @@ HRESULT APIENTRY virtio_wddm_create_device(D3D10DDI_HADAPTER hAdapter, D3D10DDIA
+@@ -787,6 +792,33 @@ HRESULT APIENTRY virtio_wddm_create_device(D3D10DDI_HADAPTER hAdapter, D3D10DDIA
          pArgs->DXGIBaseDDI.pDXGIDDIBaseFunctions2->pfnResolveSharedResource    = virtio_wddm_resolve_shared_resource;
      }
  

@@ -86,7 +86,7 @@ int main(int argc, char **argv) {
     bool debugLayer = argc > 1 && std::strcmp(argv[1], "debug") == 0;
     std::printf("probe=d3d11_fl debug_layer=%d\n", debugLayer ? 1 : 0);
 
-    probe(D3D_FEATURE_LEVEL_0, true, debugLayer);
+    probe((D3D_FEATURE_LEVEL)0, true, debugLayer);
     probe(D3D_FEATURE_LEVEL_10_0, false, debugLayer);
     probe(D3D_FEATURE_LEVEL_10_1, false, debugLayer);
     probe(D3D_FEATURE_LEVEL_11_0, false, debugLayer);
