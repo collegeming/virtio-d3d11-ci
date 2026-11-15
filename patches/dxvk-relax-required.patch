@@ -1,0 +1,57 @@
+diff --git a/src/dxvk/dxvk_device_info.cpp b/src/dxvk/dxvk_device_info.cpp
+index 63d89d9d..2467e967 100644
+--- a/src/dxvk/dxvk_device_info.cpp
++++ b/src/dxvk/dxvk_device_info.cpp
+@@ -1,4 +1,5 @@
+ #include <algorithm>
++#include <cstring>
+ #include <iomanip>
+ #include <set>
+ #include <sstream>
+@@ -10,6 +11,36 @@
+ 
+ namespace dxvk {
+ 
++  /**
++   * \brief Checks whether a required feature may be treated as optional
++   *
++   * Used for bring-up on GPUs that lack features DXVK assumes to be
++   * universally available (e.g. Mali without geometry shaders).
++   * The default is the upstream strict behaviour. Set
++   * DXVK_UMD_RELAX_REQUIRED=mali for the known Mali blockers, =all to
++   * skip every required feature/extension check, or a comma-separated
++   * feature name list such as geometryShader,multiViewport.
++   *
++   * VK_KHR_swapchain is relaxed for any non-empty request because the
++   * imported UMD device path does not expose it; offscreen bring-up must
++   * still be able to create a D3D11 device. Swapchain creation will fail
++   * later if an application actually asks for one.
++   */
++  static bool isRequiredFeatureRelaxed(const char* name) {
++    static const std::string requested = env::getEnvVar("DXVK_UMD_RELAX_REQUIRED");
++    if (requested.empty())
++      return false;
++    if (requested == "all" || requested == "1")
++      return true;
++    if (!std::strcmp(name, "khrSwapchain"))
++      return true;
++    std::string list = requested;
++    if (list == "mali")
++      list = "geometryShader,multiViewport,shaderClipDistance,shaderCullDistance";
++    const std::string needle = std::string(",") + name + ",";
++    return (std::string(",") + list + ",").find(needle) != std::string::npos;
++  }
++
+   #define CORE_VERSIONS                            \
+     HANDLE_CORE(vk11);                             \
+     HANDLE_CORE(vk12);                             \
+@@ -754,7 +785,8 @@ namespace dxvk {
+       return std::string("Device does not have a graphics queue");
+ 
+     for (const auto& f : getFeatureList()) {
+-      if (f.featureRequired && !(*f.featureEnabled)) {
++      if (f.featureRequired && !(*f.featureEnabled)
++       && !isRequiredFeatureRelaxed(f.readableName)) {
+         std::string message = str::format("Device does not support required feature '", f.readableName, "'");
+ 
+         if (f.extensionEnabled)

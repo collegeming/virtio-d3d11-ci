@@ -1,0 +1,150 @@
+name: build-dx11um-virtio-exp
+
+# Experimental build only. The upstream UMD (AGPL-3.0) and DXVK (zlib)
+# sources are fetched at build time and are not committed to this repo.
+# Windows SDK/WDK headers are fetched from Microsoft NuGet packages into a
+# gitignored build directory and are not uploaded as artifacts.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build.yml'
+      - 'patches/**'
+
+permissions:
+  contents: read
+
+env:
+  LLVM_MINGW_VERSION: '20261104'
+  GLSLANG_VERSION: '16.6.0'
+  SDK_NUPKG_VERSION: '10.0.26100.6584'
+  WDK_NUPKG_VERSION: '10.0.26100.6584'
+  UMD_REPO: 'https://github.com/Droid-VM/virtio-d3d11.git'
+  DXVK_REPO: 'https://github.com/Droid-VM/dxvk.git'
+  UMD_REF: 'wingpu'
+  DXVK_REF: 'wingpu'
+
+jobs:
+  build:
+    name: dx11um_virtio (ubuntu-24.04 cross, ARM64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install download/extract tools
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq aria2 unzip
+
+      - name: Fetch toolchain, headers, sources and patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOOLS="$RUNNER_TEMP/tools"
+          mkdir -p "$TOOLS" "$TOOLS/glslang"
+
+          fetch() {
+            local url="$1" out="$2"
+            rm -f "$out" "$out.aria2"
+            if ! aria2c -x16 -s16 --max-tries=5 --retry-wait=5 \
+                 --allow-overwrite=true --auto-file-renaming=false \
+                 -d "$(dirname "$out")" -o "$(basename "$out")" "$url" >/dev/null; then
+              rm -f "$out" "$out.aria2"
+              curl -fL --retry 5 --retry-delay 5 -o "$out" "$url"
+            fi
+          }
+
+          fetch "https://github.com/mstorsjo/llvm-mingw/releases/download/${LLVM_MINGW_VERSION}/llvm-mingw-${LLVM_MINGW_VERSION}-ucrt-ubuntu-22.04-x86_64.tar.xz" \
+            "$TOOLS/llvm-mingw.tar.xz"
+          tar -xJf "$TOOLS/llvm-mingw.tar.xz" -C "$TOOLS"
+          mv "$TOOLS/llvm-mingw-${LLVM_MINGW_VERSION}-ucrt-ubuntu-22.04-x86_64" "$TOOLS/llvm-mingw"
+          echo "$TOOLS/llvm-mingw/bin" >> "$GITHUB_PATH"
+
+          fetch "https://github.com/KhronosGroup/glslang/releases/download/${GLSLANG_VERSION}/glslang-${GLSLANG_VERSION}-linux-x86_64-release.tar.gz" \
+            "$TOOLS/glslang.tar.gz"
+          tar -xzf "$TOOLS/glslang.tar.gz" -C "$TOOLS/glslang"
+
+          fetch "https://api.nuget.org/v3-flatcontainer/microsoft.windows.sdk.cpp/${SDK_NUPKG_VERSION}/microsoft.windows.sdk.cpp.${SDK_NUPKG_VERSION}.nupkg" \
+            "$TOOLS/sdk.nupkg"
+          fetch "https://api.nuget.org/v3-flatcontainer/microsoft.windows.wdk.arm64/${WDK_NUPKG_VERSION}/microsoft.windows.wdk.arm64.${WDK_NUPKG_VERSION}.nupkg" \
+            "$TOOLS/wdk.nupkg"
+          mkdir -p "$TOOLS/sdk" "$TOOLS/wdk"
+          unzip -q -o "$TOOLS/sdk.nupkg" -d "$TOOLS/sdk"
+          unzip -q -o "$TOOLS/wdk.nupkg" -d "$TOOLS/wdk"
+
+          git clone --depth 1 --branch "$UMD_REF" "$UMD_REPO" umd
+          # The UMD gitlink 035608a... no longer exists; do not use --recursive.
+          git clone --depth 1 --branch "$DXVK_REF" "$DXVK_REPO" umd/thirdparty/dxvk
+          submodules_ok=0
+          for attempt in 1 2 3; do
+            if git -C umd/thirdparty/dxvk submodule update --init --recursive; then
+              submodules_ok=1
+              break
+            fi
+            sleep 5
+          done
+          [ "$submodules_ok" = 1 ] || { echo "DXVK submodule update failed" >&2; exit 1; }
+
+          SDK_INC="$TOOLS/sdk/c/Include/10.0.26100.0"
+          WDK_INC="$TOOLS/wdk/c/Include/10.0.26100.0"
+          mkdir -p umd/include/winddk
+          for n in d3d10umddi.h d3dumddi.h d3d10TokenizedProgramFormat.hpp \
+                   d3d11TokenizedProgramFormat.hpp d3d12TokenizedProgramFormat.hpp \
+                   d3dkmddi.h d3dkmdt.h d3dkmthk.h d3dukmdt.h \
+                   dxgiddi.h dxgiformat.h dxgitype.h dxmini.h wmidata.h; do
+            f="$(find "$SDK_INC" "$WDK_INC" -name "$n" | head -n 1)"
+            [ -n "$f" ] || { echo "missing WDK/SDK header: $n" >&2; exit 1; }
+            cp "$f" umd/include/winddk/
+          done
+          cp umd/include/winddk/d3d12TokenizedProgramFormat.hpp \
+             umd/include/winddk/d3d12tokenizedprogramformat.hpp
+
+          git -C umd/thirdparty/dxvk apply "$GITHUB_WORKSPACE/patches/dxvk-relax-required.patch"
+
+          # Drop large inputs; build needs only the extracted toolchain.
+          rm -rf "$TOOLS/sdk" "$TOOLS/wdk" "$TOOLS"/*.nupkg
+          rm -f "$TOOLS/llvm-mingw.tar.xz" "$TOOLS/glslang.tar.gz"
+
+          echo "umd=$(git -C umd rev-parse HEAD)"
+          echo "dxvk=$(git -C umd/thirdparty/dxvk rev-parse HEAD)"
+
+      - name: Build dx11um_virtio.dll
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOOLS="$RUNNER_TEMP/tools"
+          cd umd
+          make -j"$(nproc)" LTO= PYTHON=python3 \
+            GLSLANG="$TOOLS/glslang/bin/glslang" 2>&1 | tee build.log
+
+      - name: Verify PE and write checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOOLS="$RUNNER_TEMP/tools"
+          READOBJ="$TOOLS/llvm-mingw/bin/llvm-readobj"
+          "$READOBJ" --file-headers umd/build/dist/dx11um_virtio.dll | grep -q 'IMAGE_FILE_MACHINE_ARM64'
+          "$READOBJ" --coff-exports umd/build/dist/dx11um_virtio.dll | grep -q 'OpenAdapter10_2'
+          (cd umd/build/dist && sha256sum dx11um_virtio.dll dx11um_virtio.debug > SHA256SUMS.txt)
+          git -C umd/thirdparty/dxvk rev-parse HEAD > umd/build/dist/dxvk-commit.txt
+          git -C umd rev-parse HEAD > umd/build/dist/umd-commit.txt
+          echo '--- SHA256SUMS.txt ---'
+          cat umd/build/dist/SHA256SUMS.txt
+          echo '--- commits ---'
+          cat umd/build/dist/umd-commit.txt umd/build/dist/dxvk-commit.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dx11um-virtio-exp-${{ github.run_number }}
+          path: |
+            umd/build/dist/dx11um_virtio.dll
+            umd/build/dist/dx11um_virtio.debug
+            umd/build/dist/SHA256SUMS.txt
+            umd/build/dist/dxvk-commit.txt
+            umd/build/dist/umd-commit.txt
+            umd/build.log
+          if-no-files-found: error

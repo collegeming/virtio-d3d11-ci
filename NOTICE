@@ -1,0 +1,24 @@
+NOTICE
+
+This repository contains only CI configuration and a patch. It does not
+redistribute the upstream UMD source, DXVK source, or Windows SDK/WDK headers.
+
+Components fetched at build time and their licenses:
+
+- Droid-VM/virtio-d3d11 (wingpu): GNU Affero General Public License v3.0
+  (per its README).
+- Droid-VM/dxvk (wingpu): zlib/libpng license (see DXVK LICENSE).
+- Mesa / PanVK (runtime ICD, not built here): MIT license.
+- llvm-mingw: Apache License 2.0 with LLVM Exceptions.
+- Khronos glslang: Apache License 2.0 / BSD-style terms.
+- Khronos Vulkan-Headers and SPIRV-Headers: Apache License 2.0 / MIT.
+- Microsoft Windows SDK and WDK headers: Microsoft license terms. The
+  workflow downloads the NuGet packages and copies headers into a temporary
+  build directory only; no headers are committed or uploaded.
+
+The built dx11um_virtio.dll combines the AGPL-3.0 UMD with the zlib DXVK.
+Anyone redistributing the artifact must comply with the AGPL-3.0 and the other
+applicable licenses.
+
+This repository and its artifacts are experimental, provided "as is", without
+warranty of any kind. They are not official DroidVM builds.
