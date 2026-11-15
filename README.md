@@ -17,6 +17,26 @@ Windows SDK/WDK headers**. The workflow fetches them at build time:
   uploaded.
 - Toolchain: llvm-mingw Linux release and Khronos glslang Linux release.
 
+## Current validation state (2026-11-15)
+
+Build run 43749569277 produced `dx11um_virtio.dll` SHA-256
+`cc79360ac06909fa63ef09055f679c31f427bea70fff766fc62d3e42673d7d2e`.
+On the Mali-G2-Ultra / PanVK guest, with a direct
+`cmd /c "set DXVK_UMD_RELAX_REQUIRED=mali&& ..."` launch:
+
+- DXVK enumerates the Mali device and no longer rejects it on required
+  features or `VK_KHR_swapchain`.
+- The UMD handles the PanVK/KMD LUID mismatch by using the first DXGI adapter,
+  and the runtime selects D3D11.0 after the Triton DDI clamp.
+- The test then fastfails (`0xC0000409`) inside the PanVK ICD
+  (`vulkan_virtio.dll`, offset `+0x6FA46C`) before printing a D3D11 result.
+  A separate compute probe pins this to PanVK's pipeline compiler
+  (`vkCreateComputePipelines` fastfail, `brk #0xf003`), not to the UMD.
+
+The remaining blocker is therefore upstream PanVK shader compilation, pending
+the Panfrost bitfield-patch rebase. This repository does not claim a working
+D3D11 rendering stack yet.
+
 ## What the patches change
 
 `patches/umd-fallback-luid.patch` changes the UMD's adapter selection: if
