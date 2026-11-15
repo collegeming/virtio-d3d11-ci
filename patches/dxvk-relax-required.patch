@@ -1,5 +1,5 @@
 diff --git a/src/dxvk/dxvk_device_info.cpp b/src/dxvk/dxvk_device_info.cpp
-index 63d89d9d..2467e967 100644
+index 63d89d9d..52e5dcf3 100644
 --- a/src/dxvk/dxvk_device_info.cpp
 +++ b/src/dxvk/dxvk_device_info.cpp
 @@ -1,4 +1,5 @@
@@ -8,7 +8,7 @@ index 63d89d9d..2467e967 100644
  #include <iomanip>
  #include <set>
  #include <sstream>
-@@ -10,6 +11,36 @@
+@@ -10,6 +11,39 @@
  
  namespace dxvk {
  
@@ -28,8 +28,11 @@ index 63d89d9d..2467e967 100644
 +   * later if an application actually asks for one.
 +   */
 +  static bool isRequiredFeatureRelaxed(const char* name) {
-+    static const std::string requested = env::getEnvVar("DXVK_UMD_RELAX_REQUIRED");
-+    if (requested.empty())
++    static const std::string requested = [] {
++      std::string value = env::getEnvVar("DXVK_UMD_RELAX_REQUIRED");
++      return value.empty() ? std::string("mali") : value;
++    }();
++    if (requested == "strict" || requested == "none")
 +      return false;
 +    if (requested == "all" || requested == "1")
 +      return true;
@@ -45,7 +48,7 @@ index 63d89d9d..2467e967 100644
    #define CORE_VERSIONS                            \
      HANDLE_CORE(vk11);                             \
      HANDLE_CORE(vk12);                             \
-@@ -754,7 +785,8 @@ namespace dxvk {
+@@ -754,7 +788,8 @@ namespace dxvk {
        return std::string("Device does not have a graphics queue");
  
      for (const auto& f : getFeatureList()) {

@@ -67,11 +67,15 @@ a bring-up-only clamp; the offscreen test only needs D3D11.0.
 `patches/dxvk-relax-required.patch` adds an opt-in relaxation to
 `src/dxvk/dxvk_device_info.cpp`:
 
-- Empty `DXVK_UMD_RELAX_REQUIRED`: upstream strict behavior (no change).
+- Empty `DXVK_UMD_RELAX_REQUIRED`: defaults to the `mali` preset so DWM and
+  other processes that do not inherit the shell environment still get the
+  bring-up relaxation.
 - `DXVK_UMD_RELAX_REQUIRED=mali`: relax the four Mali/PanVK blockers
   `geometryShader`, `multiViewport`, `shaderClipDistance`,
   `shaderCullDistance`; `VK_KHR_swapchain` is relaxed too because the imported
   UMD device path does not expose it.
+- `DXVK_UMD_RELAX_REQUIRED=strict` (or `none`): restore the upstream strict
+  required-feature behavior.
 - `DXVK_UMD_RELAX_REQUIRED=all` (or `1`): relax every required feature and
   extension check.
 - A comma-separated list relaxes exactly those feature names. Any non-empty
