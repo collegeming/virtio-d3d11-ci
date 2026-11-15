@@ -1,0 +1,17 @@
+diff --git a/thirdparty/triton/src/virtio/neptune/triton/tritonDDI.c b/thirdparty/triton/src/virtio/neptune/triton/tritonDDI.c
+index 92cab35..ba67704 100644
+--- a/thirdparty/triton/src/virtio/neptune/triton/tritonDDI.c
++++ b/thirdparty/triton/src/virtio/neptune/triton/tritonDDI.c
+@@ -1047,7 +1047,11 @@ TRITON_LAYER_EXPORT HRESULT APIENTRY tritonGetSupportedVersions(
+ #ifdef TRITON_BUILD_COMMON_TRANSLATION_LAYER
+     const UINT64 versions[] = {
+         D3D11_0_DDI_SUPPORTED,
+-        D3D11_1_DDI_SUPPORTED,
++        /* The UMD's common device-func assignments are written against the
++         * D3D11_0 table layout. Advertising D3D11_1 makes the runtime select
++         * p11_1DeviceFuncs and the UMD then corrupts that table, which the
++         * runtime reports as DXGI_ERROR_DRIVER_INTERNAL_ERROR. Keep this
++         * bring-up build on the D3D11_0 DDI. */
+     };
+     const UINT32 kCount = sizeof(versions) / sizeof(versions[0]);
+ 

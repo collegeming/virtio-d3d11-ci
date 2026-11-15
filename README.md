@@ -25,6 +25,12 @@ from the KMD LUID, the UMD uses DXGI adapter 0. This is a single-adapter
 bring-up workaround; it does not change the multi-adapter path when the LUID
 matches.
 
+`patches/triton-d3d11-0-only.patch` clamps Triton's advertised DDI versions to
+D3D11.0. The UMD's common device-function assignments use the D3D11.0 table
+layout, so advertising D3D11.1 makes the runtime select the 11.1 table and the
+UMD corrupts it (runtime returns `DXGI_ERROR_DRIVER_INTERNAL_ERROR`). This is
+a bring-up-only clamp; the offscreen test only needs D3D11.0.
+
 `patches/dxvk-relax-required.patch` adds an opt-in relaxation to
 `src/dxvk/dxvk_device_info.cpp`:
 
