@@ -12,6 +12,7 @@ on:
     paths:
       - '.github/workflows/build.yml'
       - 'patches/**'
+      - 'tests/**'
 
 permissions:
   contents: read
@@ -104,6 +105,7 @@ jobs:
              umd/include/winddk/d3d12tokenizedprogramformat.hpp
 
           git -C umd apply "$GITHUB_WORKSPACE/patches/umd-fallback-luid.patch"
+          git -C umd apply "$GITHUB_WORKSPACE/patches/umd-ddi-table-init.patch"
           git -C umd apply "$GITHUB_WORKSPACE/patches/triton-d3d11-0-only.patch"
           git -C umd/thirdparty/dxvk apply "$GITHUB_WORKSPACE/patches/dxvk-relax-required.patch"
 
@@ -149,4 +151,27 @@ jobs:
             umd/build/dist/dxvk-commit.txt
             umd/build/dist/umd-commit.txt
             umd/build.log
+          if-no-files-found: error
+
+  test-d3d11-fl:
+    name: D3D11 feature-level probe (windows-11-arm)
+    runs-on: windows-11-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: arm64
+      - name: Build probe
+        shell: cmd
+        run: |
+          cl /nologo /EHsc /O2 /std:c++17 tests\test_d3d11_fl.cpp /Fe:test_d3d11_fl_arm64.exe d3d11.lib dxgi.lib
+          if errorlevel 1 exit /b 1
+          powershell -NoProfile -Command "$h=Get-FileHash .\test_d3d11_fl_arm64.exe -Algorithm SHA256; $h.Hash | Tee-Object SHA256SUMS-test.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: test-d3d11-fl-arm64-${{ github.run_number }}
+          path: |
+            test_d3d11_fl_arm64.exe
+            SHA256SUMS-test.txt
           if-no-files-found: error
