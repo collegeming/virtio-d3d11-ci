@@ -1,12 +1,11 @@
 diff --git a/thirdparty/triton/src/virtio/neptune/triton/tritonQuery.c b/thirdparty/triton/src/virtio/neptune/triton/tritonQuery.c
-index 6caf28d..65a8752 100644
+index 38ee38a..65a8752 100644
 --- a/thirdparty/triton/src/virtio/neptune/triton/tritonQuery.c
 +++ b/thirdparty/triton/src/virtio/neptune/triton/tritonQuery.c
-@@ -528,7 +528,21 @@ tritonCheckFormatSupport(D3D10DDI_HDEVICE hDevice, DXGI_FORMAT Format, UINT *pOu
+@@ -528,6 +528,20 @@ tritonCheckFormatSupport(D3D10DDI_HDEVICE hDevice, DXGI_FORMAT Format, UINT *pOu
               tritonMsaaFamilyQuality(pD, Format, 4) > 0)
          *pOut |= D3D10_DDI_FORMAT_SUPPORT_MULTISAMPLE_LOAD;
  
--    TR_LOG_HOT("CheckFormatSupport fmt=%u -> ddi=0x%08x (host s1=0x%08x s2=0x%08x)",
 +    /* D3D11 does not allow the R32G32B32 family as a render or MSAA target.
 +     * Vulkan drivers may still report color-attachment support for them; the
 +     * D3D11 runtime rejects that during device finalization with
@@ -21,16 +20,6 @@ index 6caf28d..65a8752 100644
 +                   D3D10_DDI_FORMAT_SUPPORT_MULTISAMPLE_LOAD);
 +    }
 +
-+    TR_LOG("CheckFormatSupport fmt=%u -> ddi=0x%08x (host s1=0x%08x s2=0x%08x)",
+     TR_LOG("CheckFormatSupport fmt=%u -> ddi=0x%08x (host s1=0x%08x s2=0x%08x)",
             (UINT)Format, *pOut, s1, s2);
      if ((UINT)Format < 256u)
-         InterlockedExchange(&s_fmtCache[Format],
-@@ -552,7 +566,7 @@ tritonCheckMultisampleQualityLevels(D3D10DDI_HDEVICE hDevice, DXGI_FORMAT Format
-         *pNumQualityLevels = (SampleCount <= 1 && support) ? 1 : 0;
-     else
-         *pNumQualityLevels = tritonMsaaQuality(pD, Format, SampleCount);
--    TR_LOG_HOT("CheckMSQL fmt=%u samples=%u -> q=%u",
-+    TR_LOG("CheckMSQL fmt=%u samples=%u -> q=%u",
-            (UINT)Format, SampleCount, *pNumQualityLevels);
- }
- 
