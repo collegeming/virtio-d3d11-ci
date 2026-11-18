@@ -1,0 +1,13 @@
+diff --git a/src/dxvk/dxvk_device_info.cpp b/src/dxvk/dxvk_device_info.cpp
+index 63d89d9..8aea105 100644
+--- a/src/dxvk/dxvk_device_info.cpp
++++ b/src/dxvk/dxvk_device_info.cpp
+@@ -905,7 +905,7 @@ namespace dxvk {
+ 
+       ENABLE_FEATURE(vk13, inlineUniformBlock, true),
+       ENABLE_FEATURE(vk13, computeFullSubgroups, true),
+-      ENABLE_FEATURE(vk13, dynamicRendering, true),
++      ENABLE_FEATURE(vk13, dynamicRendering, false),
+       ENABLE_FEATURE(vk13, maintenance4, true),
+       ENABLE_FEATURE(vk13, robustImageAccess, false),
+       ENABLE_FEATURE(vk13, pipelineCreationCacheControl, false),
