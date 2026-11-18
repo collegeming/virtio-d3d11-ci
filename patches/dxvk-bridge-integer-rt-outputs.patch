@@ -1,0 +1,225 @@
+diff --git a/src/dxvk/dxvk_graphics.cpp b/src/dxvk/dxvk_graphics.cpp
+index 6ebb58e..49b39e7 100644
+--- a/src/dxvk/dxvk_graphics.cpp
++++ b/src/dxvk/dxvk_graphics.cpp
+@@ -894,8 +894,17 @@ namespace dxvk {
+       info.sampleLocations = state.useSampleLocations();
+ 
+       for (uint32_t i = 0; i < MaxNumRenderTargets; i++) {
+-        if ((fsOutputMask & (1u << i)) && state.writesRenderTarget(i))
++        if ((fsOutputMask & (1u << i)) && state.writesRenderTarget(i)) {
+           info.rtSwizzles[i] = state.omSwizzle[i].mapping();
++
++          // D3D11 allows fragment shader outputs of any type to be written to
++          // any render target format and reinterprets the bits, whereas Vulkan
++          // requires the output type to match the format's numeric class.
++          const auto* formatInfo = lookupFormatInfo(state.rt.getColorFormat(i));
++
++          info.rtTypes[i] = formatInfo->flags.test(DxvkFormatFlag::SampledUInt) ? 1u
++                          : formatInfo->flags.test(DxvkFormatFlag::SampledSInt) ? 2u : 0u;
++        }
+       }
+     }
+ 
+@@ -1387,6 +1396,15 @@ namespace dxvk {
+         return false;
+     }
+ 
++    // Integer render target formats require the fragment shader outputs to be
++    // reinterpreted, which the pre-compiled shader libraries cannot provide.
++    for (uint32_t i = 0; i < MaxNumRenderTargets; i++) {
++      if ((m_fsOut & (1u << i)) && state.writesRenderTarget(i)
++       && lookupFormatInfo(state.rt.getColorFormat(i))->flags.any(
++            DxvkFormatFlag::SampledUInt, DxvkFormatFlag::SampledSInt))
++        return false;
++    }
++
+     return true;
+   }
+ 
+diff --git a/src/dxvk/dxvk_shader.cpp b/src/dxvk/dxvk_shader.cpp
+index 8f6261b..b8a3650 100644
+--- a/src/dxvk/dxvk_shader.cpp
++++ b/src/dxvk/dxvk_shader.cpp
+@@ -34,6 +34,9 @@ namespace dxvk {
+         && rtSwizzles[i].a == other.rtSwizzles[i].a;
+     }
+ 
++    for (uint32_t i = 0; i < rtTypes.size() && eq; i++)
++      eq = rtTypes[i] == other.rtTypes[i];
++
+     return eq;
+   }
+ 
+@@ -55,6 +58,9 @@ namespace dxvk {
+       hash.add(rtSwizzles[i].a);
+     }
+ 
++    for (uint32_t i = 0; i < rtTypes.size(); i++)
++      hash.add(rtTypes[i]);
++
+     return hash;
+   }
+ 
+diff --git a/src/dxvk/dxvk_shader.h b/src/dxvk/dxvk_shader.h
+index d7619c7..d5517fc 100644
+--- a/src/dxvk/dxvk_shader.h
++++ b/src/dxvk/dxvk_shader.h
+@@ -213,6 +213,11 @@ namespace dxvk {
+ 
+     std::array<VkComponentMapping, MaxNumRenderTargets> rtSwizzles = { };
+ 
++    // Numeric class of each render target, used to reinterpret fragment
++    // shader outputs whose type does not match the render target format.
++    // 0 = float/unorm/snorm/srgb or unused, 1 = uint, 2 = sint.
++    std::array<uint8_t, MaxNumRenderTargets> rtTypes = { };
++
+     bool eq(const DxvkShaderLinkage& other) const;
+ 
+     size_t hash() const;
+diff --git a/src/dxvk/dxvk_shader_ir.cpp b/src/dxvk/dxvk_shader_ir.cpp
+index c52fcc4..c8b5450 100644
+--- a/src/dxvk/dxvk_shader_ir.cpp
++++ b/src/dxvk/dxvk_shader_ir.cpp
+@@ -1,3 +1,6 @@
++#include <mutex>
++#include <set>
++
+ #include <ir/ir_serialize.h>
+ 
+ #include <spirv/spirv_builder.h>
+@@ -2025,6 +2028,10 @@ namespace dxvk {
+     dxbc_spv::ir::Builder irBuilder;
+     deserializeIr(irBuilder);
+ 
++    // Reinterpret fragment shader outputs for integer render target formats
++    if (linkage && m_metadata.stage == VK_SHADER_STAGE_FRAGMENT_BIT)
++      rewriteOutputTypes(irBuilder, linkage->rtTypes);
++
+     // Fix up shader I/O based on shader linkage
+     { dxbc_spv::ir::LowerIoPass ioPass(irBuilder);
+       if (linkage) {
+@@ -2331,6 +2338,99 @@ namespace dxvk {
+   }
+ 
+ 
++  void DxvkIrShader::rewriteOutputTypes(
++          dxbc_spv::ir::Builder&                  builder,
++    const std::array<uint8_t, MaxNumRenderTargets>& rtTypes) {
++    using namespace dxbc_spv;
++
++    // Find output declarations whose type does not match the numeric
++    // class of the render target format that they are written to.
++    std::vector<ir::SsaDef> outputDecls;
++
++    auto declarations = builder.getDeclarations();
++
++    for (auto iter = declarations.first; iter != declarations.second; iter++) {
++      if (iter->getOpCode() != ir::OpCode::eDclOutput)
++        continue;
++
++      uint32_t location = uint32_t(iter->getOperand(iter->getFirstLiteralOperandIndex()));
++
++      if (location >= rtTypes.size() || !rtTypes[location])
++        continue;
++
++      ir::ScalarType scalarType = rtTypes[location] == 1u
++        ? ir::ScalarType::eU32
++        : ir::ScalarType::eI32;
++
++      if (iter->getType().getBaseType() != scalarType)
++        outputDecls.push_back(iter->getDef());
++    }
++
++    for (auto decl : outputDecls) {
++      ir::Op declOp = builder.getOp(decl);
++
++      ir::Type oldType = declOp.getType();
++
++      uint32_t location = uint32_t(declOp.getOperand(declOp.getFirstLiteralOperandIndex()));
++      ir::ScalarType scalarType = rtTypes[location] == 1u
++        ? ir::ScalarType::eU32
++        : ir::ScalarType::eI32;
++
++      ir::Type newType(scalarType, oldType.getVectorSize());
++
++      {
++        static std::mutex loggedTypesMutex;
++        static std::set<std::string> loggedTypes;
++
++        std::lock_guard<std::mutex> lock(loggedTypesMutex);
++
++        if (loggedTypes.insert(str::format(m_debugName, ":", location,
++            ":", uint32_t(oldType.getBaseType()), "->", uint32_t(scalarType))).second) {
++          Logger::info(str::format("DXVK int RT bridge: ", m_debugName,
++            ": output ", location, " type ", uint32_t(oldType.getBaseType()),
++            " -> ", uint32_t(scalarType)));
++        }
++      }
++
++      // Change the component type of the output declaration
++      declOp.setType(newType);
++      builder.rewriteOp(decl, declOp);
++
++      // Reinterpret all values written to or read from the output
++      std::vector<ir::SsaDef> uses;
++      builder.getUses(decl, uses);
++
++      for (auto use : uses) {
++        ir::Op op = builder.getOp(use);
++
++        if (op.getOpCode() == ir::OpCode::eOutputStore) {
++          uint32_t valueIndex = op.getOperandCount() - 1u;
++
++          ir::SsaDef value = ir::SsaDef(op.getOperand(valueIndex));
++          ir::Type valueType = builder.getOp(value).getType();
++
++          if (valueType.getBaseType() != scalarType) {
++            ir::SsaDef cast = builder.addBefore(use, ir::Op::Cast(
++              ir::Type(scalarType, valueType.getVectorSize()), value));
++
++            op.setOperand(valueIndex, cast);
++            builder.rewriteOp(use, op);
++          }
++        } else if (op.getOpCode() == ir::OpCode::eOutputLoad) {
++          ir::Type loadType = op.getType();
++
++          if (loadType.getBaseType() != scalarType) {
++            ir::SsaDef load = builder.addBefore(use, ir::Op::OutputLoad(
++              ir::Type(scalarType, loadType.getVectorSize()), decl, ir::SsaDef(op.getOperand(1u))));
++
++            builder.rewriteOp(use, ir::Op::Cast(loadType, load));
++          }
++        }
++      }
++    }
++  }
++
++
+   dxbc_spv::ir::IoOutputSwizzle DxvkIrShader::convertOutputSwizzle(VkComponentMapping mapping) {
+     dxbc_spv::ir::IoOutputSwizzle result;
+     result.x = convertOutputComponent(mapping.r, dxbc_spv::ir::IoOutputComponent::eX);
+diff --git a/src/dxvk/dxvk_shader_ir.h b/src/dxvk/dxvk_shader_ir.h
+index a97992f..043abee 100644
+--- a/src/dxvk/dxvk_shader_ir.h
++++ b/src/dxvk/dxvk_shader_ir.h
+@@ -218,6 +218,19 @@ namespace dxvk {
+ 
+     static std::optional<dxbc_spv::ir::BuiltIn> convertBuiltIn(spv::BuiltIn builtIn, VkShaderStageFlagBits stage);
+ 
++    /**
++     * \brief Reinterprets fragment shader outputs
++     *
++     * Changes the component type of fragment shader outputs whose numeric
++     * class does not match the corresponding render target format, and
++     * reinterprets all values written to or read from them.
++     * \param [in] builder IR builder
++     * \param [in] rtTypes Render target numeric classes
++     */
++    void rewriteOutputTypes(
++            dxbc_spv::ir::Builder&                  builder,
++      const std::array<uint8_t, MaxNumRenderTargets>& rtTypes);
++
+   };
+ 
+ }

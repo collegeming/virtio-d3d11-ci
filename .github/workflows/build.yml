@@ -110,6 +110,12 @@ jobs:
           git -C umd apply "$GITHUB_WORKSPACE/patches/triton-d3d11-0-only.patch"
           git -C umd/thirdparty/dxvk apply "$GITHUB_WORKSPACE/patches/dxvk-relax-required.patch"
           git -C umd/thirdparty/dxvk apply "$GITHUB_WORKSPACE/patches/dxvk-log-integer-rt.patch"
+          git -C umd/thirdparty/dxvk apply "$GITHUB_WORKSPACE/patches/dxvk-bridge-integer-rt-outputs.patch"
+
+          echo "--- dxvk patch stack ---"
+          git -C umd/thirdparty/dxvk diff --stat
+          grep -q 'rewriteOutputTypes' umd/thirdparty/dxvk/src/dxvk/dxvk_shader_ir.cpp \
+            && echo "integer RT bridge patch present: rewriteOutputTypes found"
 
           # Drop large inputs; build needs only the extracted toolchain.
           rm -rf "$TOOLS/sdk" "$TOOLS/wdk" "$TOOLS"/*.nupkg
