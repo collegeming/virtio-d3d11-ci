@@ -78,7 +78,7 @@ index d7619c7..d5517fc 100644
  
      size_t hash() const;
 diff --git a/src/dxvk/dxvk_shader_ir.cpp b/src/dxvk/dxvk_shader_ir.cpp
-index c52fcc4..c8b5450 100644
+index c52fcc4..4ed4c26 100644
 --- a/src/dxvk/dxvk_shader_ir.cpp
 +++ b/src/dxvk/dxvk_shader_ir.cpp
 @@ -1,3 +1,6 @@
@@ -127,7 +127,7 @@ index c52fcc4..c8b5450 100644
 +        ? ir::ScalarType::eU32
 +        : ir::ScalarType::eI32;
 +
-+      if (iter->getType().getBaseType() != scalarType)
++      if (iter->getType().getBaseType(0u).getBaseType() != scalarType)
 +        outputDecls.push_back(iter->getDef());
 +    }
 +
@@ -141,7 +141,7 @@ index c52fcc4..c8b5450 100644
 +        ? ir::ScalarType::eU32
 +        : ir::ScalarType::eI32;
 +
-+      ir::Type newType(scalarType, oldType.getVectorSize());
++      ir::Type newType(scalarType, oldType.getBaseType(0u).getVectorSize());
 +
 +      {
 +        static std::mutex loggedTypesMutex;
@@ -150,9 +150,9 @@ index c52fcc4..c8b5450 100644
 +        std::lock_guard<std::mutex> lock(loggedTypesMutex);
 +
 +        if (loggedTypes.insert(str::format(m_debugName, ":", location,
-+            ":", uint32_t(oldType.getBaseType()), "->", uint32_t(scalarType))).second) {
++            ":", uint32_t(oldType.getBaseType(0u).getBaseType()), "->", uint32_t(scalarType))).second) {
 +          Logger::info(str::format("DXVK int RT bridge: ", m_debugName,
-+            ": output ", location, " type ", uint32_t(oldType.getBaseType()),
++            ": output ", location, " type ", uint32_t(oldType.getBaseType(0u).getBaseType()),
 +            " -> ", uint32_t(scalarType)));
 +        }
 +      }
@@ -174,9 +174,9 @@ index c52fcc4..c8b5450 100644
 +          ir::SsaDef value = ir::SsaDef(op.getOperand(valueIndex));
 +          ir::Type valueType = builder.getOp(value).getType();
 +
-+          if (valueType.getBaseType() != scalarType) {
++          if (valueType.getBaseType(0u).getBaseType() != scalarType) {
 +            ir::SsaDef cast = builder.addBefore(use, ir::Op::Cast(
-+              ir::Type(scalarType, valueType.getVectorSize()), value));
++              ir::Type(scalarType, valueType.getBaseType(0u).getVectorSize()), value));
 +
 +            op.setOperand(valueIndex, cast);
 +            builder.rewriteOp(use, op);
@@ -184,9 +184,9 @@ index c52fcc4..c8b5450 100644
 +        } else if (op.getOpCode() == ir::OpCode::eOutputLoad) {
 +          ir::Type loadType = op.getType();
 +
-+          if (loadType.getBaseType() != scalarType) {
++          if (loadType.getBaseType(0u).getBaseType() != scalarType) {
 +            ir::SsaDef load = builder.addBefore(use, ir::Op::OutputLoad(
-+              ir::Type(scalarType, loadType.getVectorSize()), decl, ir::SsaDef(op.getOperand(1u))));
++              ir::Type(scalarType, loadType.getBaseType(0u).getVectorSize()), decl, ir::SsaDef(op.getOperand(1u))));
 +
 +            builder.rewriteOp(use, ir::Op::Cast(loadType, load));
 +          }
