@@ -1,0 +1,144 @@
+diff --git a/src/dxvk/dxvk_context.cpp b/src/dxvk/dxvk_context.cpp
+index f3275a6..46363d1 100644
+--- a/src/dxvk/dxvk_context.cpp
++++ b/src/dxvk/dxvk_context.cpp
+@@ -2,6 +2,8 @@
+ #include <cmath>
+ #include <cstring>
+ #include <map>
++#include <mutex>
++#include <set>
+ #include <vector>
+ #include <utility>
+ 
+@@ -9,7 +11,45 @@
+ #include "dxvk_context.h"
+ 
+ namespace dxvk {
+-  
++
++  /**
++   * \brief Logs integer render target formats at render pass begin
++   *
++   * Companion to the pipeline-side diagnostic in dxvk_graphics.cpp:
++   * reports the color attachment formats that the framebuffer actually
++   * binds. Blend state is not known at this point, and DXVK does not
++   * track fragment shader output types, so both are reported as
++   * unknown. Each distinct attachment format is logged once.
++   */
++  static void logIntegerRenderPassTargets(const DxvkFramebufferInfo& fbInfo) {
++    static const std::set<VkFormat> integerFormats = {
++      VK_FORMAT_R32_UINT, VK_FORMAT_R16_UINT, VK_FORMAT_R8_UINT,
++      VK_FORMAT_R32G32B32A32_UINT };
++
++    static std::set<uint64_t> logged;
++    static std::mutex loggedMutex;
++
++    for (uint32_t i = 0; i < MaxNumRenderTargets; i++) {
++      VkFormat format = fbInfo.getColorFormat(i);
++
++      if (integerFormats.find(format) == integerFormats.end())
++        continue;
++
++      uint64_t key = (uint64_t(uint32_t(format)) << 32) | uint64_t(i);
++
++      {
++        std::lock_guard<std::mutex> lock(loggedMutex);
++
++        if (!logged.insert(key).second)
++          continue;
++      }
++
++      Logger::info(str::format("DXVK int-RT diag: renderpass rt=", i,
++        " vkFormat=", uint32_t(format),
++        " blendEnable=unknown shaderOutputInteger=unknown"));
++    }
++  }
++
+   DxvkContext::DxvkContext(const Rc<DxvkDevice>& device)
+   : m_device      (device),
+     m_common      (&device->m_objects),
+@@ -6181,6 +6221,8 @@ namespace dxvk {
+       if (unlikely(m_features.test(DxvkContextFeature::DebugUtils)))
+         beginRenderPassDebugRegion();
+ 
++      logIntegerRenderPassTargets(m_state.om.framebufferInfo);
++
+       this->renderPassBindFramebuffer(
+         m_state.om.framebufferInfo,
+         m_state.om.renderPassOps);
+diff --git a/src/dxvk/dxvk_graphics.cpp b/src/dxvk/dxvk_graphics.cpp
+index 2c5334d..6ebb58e 100644
+--- a/src/dxvk/dxvk_graphics.cpp
++++ b/src/dxvk/dxvk_graphics.cpp
+@@ -1,4 +1,6 @@
+ #include <iomanip>
++#include <mutex>
++#include <set>
+ 
+ #include "../util/util_time.h"
+ 
+@@ -1083,11 +1085,63 @@ namespace dxvk {
+   }
+ 
+ 
++  /**
++   * \brief Logs integer render target formats (diagnostic)
++   *
++   * D3D11 integer render targets must match the shader output type
++   * and cannot be blended, which makes them a likely source of
++   * validation errors or misrendering. Log the first time each
++   * distinct render target format, blend state and shader write mask
++   * combination is seen so that the UMD state can be correlated with
++   * the formats DXVK actually receives. The fragment shader output
++   * types are not tracked in DXVK's shader metadata, so the integer
++   * output property is reported as unknown.
++   */
++  static void logIntegerRenderTargets(
++    const DxvkGraphicsPipelineStateInfo& state,
++          uint32_t                       fsOutputMask) {
++    static const std::set<VkFormat> integerFormats = {
++      VK_FORMAT_R32_UINT, VK_FORMAT_R16_UINT, VK_FORMAT_R8_UINT,
++      VK_FORMAT_R32G32B32A32_UINT };
++
++    static std::set<uint64_t> logged;
++    static std::mutex loggedMutex;
++
++    for (uint32_t i = 0; i < MaxNumRenderTargets; i++) {
++      VkFormat format = state.rt.getColorFormat(i);
++
++      if (integerFormats.find(format) == integerFormats.end())
++        continue;
++
++      uint32_t blendEnable = state.omBlend[i].blendEnable();
++
++      uint64_t key = (uint64_t(uint32_t(format)) << 33)
++                   | (uint64_t(blendEnable) << 32)
++                   | uint64_t(fsOutputMask);
++
++      {
++        std::lock_guard<std::mutex> lock(loggedMutex);
++
++        if (!logged.insert(key).second)
++          continue;
++      }
++
++      Logger::info(str::format("DXVK int-RT diag: rt=", i,
++        " vkFormat=", uint32_t(format),
++        " blendEnable=", blendEnable,
++        " fsWritesRt=", (fsOutputMask >> i) & 1u,
++        " shaderOutputInteger=unknown"));
++    }
++  }
++
++
+   DxvkGraphicsPipelineHandle DxvkGraphicsPipeline::getPipelineHandle(
+     const DxvkGraphicsPipelineStateInfo& state) {
+     DxvkGraphicsPipelineInstance* instance = this->findInstance(state);
+ 
+     if (unlikely(!instance)) {
++      logIntegerRenderTargets(state, m_fsOut);
++
+       // Exit early if the state vector is invalid
+       if (!this->validatePipelineState(state, true))
+         return DxvkGraphicsPipelineHandle();
