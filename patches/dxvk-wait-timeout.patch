@@ -1,0 +1,482 @@
+diff --git a/src/d3d11/d3d11_context_imm.cpp b/src/d3d11/d3d11_context_imm.cpp
+index 4b60b3d..8123739 100644
+--- a/src/d3d11/d3d11_context_imm.cpp
++++ b/src/d3d11/d3d11_context_imm.cpp
+@@ -5,6 +5,7 @@
+ #include "d3d11_texture.h"
+ 
+ #include "../util/util_win32_compat.h"
++#include "../dxvk/dxvk_umd_wait.h"
+ 
+ constexpr static uint32_t MinFlushIntervalUs = 750;
+ constexpr static uint32_t IncFlushIntervalUs = 250;
+@@ -293,6 +294,12 @@ namespace dxvk {
+ 
+     if (unlikely(!pResource))
+       return E_INVALIDARG;
++
++    /* Mapping usually waits for the GPU (staging readback), so it is the D3D11
++     * entry point most likely to be reached after a lost device. Fail fast
++     * instead of waiting on a fence that will never be signalled. */
++    if (unlikely(umdDeviceLost()))
++      return DXGI_ERROR_DEVICE_REMOVED;
+     
+     D3D11_RESOURCE_DIMENSION resourceDim = D3D11_RESOURCE_DIMENSION_UNKNOWN;
+     pResource->GetType(&resourceDim);
+diff --git a/src/d3d11/d3d11_device.cpp b/src/d3d11/d3d11_device.cpp
+index 5ac2501..f690cda 100644
+--- a/src/d3d11/d3d11_device.cpp
++++ b/src/d3d11/d3d11_device.cpp
+@@ -5,6 +5,7 @@
+ #include <dxbc/dxbc_parser.h>
+ #include <dxbc/dxbc_signature.h>
+ 
++#include "../dxvk/dxvk_umd_wait.h"
+ #include "../dxgi/dxgi_monitor.h"
+ #include "../dxgi/dxgi_surface.h"
+ #include "../dxgi/dxgi_swapchain.h"
+@@ -1828,6 +1829,12 @@ namespace dxvk {
+   
+   
+   HRESULT STDMETHODCALLTYPE D3D11Device::GetDeviceRemovedReason() {
++    /* A wait deadline expiring means the host stopped retiring GPU work for
++     * this process; report the documented removal code instead of the
++     * generic reset code so callers can match on 0x887A0005. */
++    if (umdDeviceLost())
++      return DXGI_ERROR_DEVICE_REMOVED;
++
+     VkResult status = m_dxvkDevice->getDeviceStatus();
+ 
+     switch (status) {
+diff --git a/src/dxvk/dxvk_device.cpp b/src/dxvk/dxvk_device.cpp
+index 929a394..0255b0c 100644
+--- a/src/dxvk/dxvk_device.cpp
++++ b/src/dxvk/dxvk_device.cpp
+@@ -4,9 +4,82 @@
+ #include "dxvk_latency_reflex.h"
+ #include "dxvk_shader_cache.h"
+ #include "dxvk_shader_ir.h"
++#include "dxvk_umd_wait.h"
++
++#include <atomic>
++#include <cstdio>
++#include <cstdlib>
+ 
+ namespace dxvk {
+-  
++
++  namespace {
++
++    constexpr uint32_t UmdDefaultWaitTimeoutMs = 3000u;
++
++    std::atomic<uint32_t>        g_umdWaitTimeoutMs     = { UmdDefaultWaitTimeoutMs };
++    std::atomic<bool>            g_umdWaitTimeoutLoaded = { false };
++    std::atomic<bool>            g_umdDeviceLost        = { false };
++
++    std::atomic<void (*)(void*)> g_umdLostCallback      = { nullptr };
++    std::atomic<void*>           g_umdLostCallbackCtx   = { nullptr };
++
++    void umdLoadWaitTimeout() {
++      if (g_umdWaitTimeoutLoaded.exchange(true))
++        return;
++
++      uint32_t timeoutMs = UmdDefaultWaitTimeoutMs;
++
++      if (const char* env = std::getenv("DROIDVM_UMD_WAIT_TIMEOUT_MS")) {
++        char* end = nullptr;
++        unsigned long value = std::strtoul(env, &end, 10);
++
++        if (end && end != env && *end == '\0' && value <= 600000ul) {
++          timeoutMs = uint32_t(value);
++        } else {
++          std::fprintf(stderr, "droidvm-umd: ignoring invalid DROIDVM_UMD_WAIT_TIMEOUT_MS=%s\n", env);
++        }
++      }
++
++      g_umdWaitTimeoutMs.store(timeoutMs);
++
++      if (timeoutMs == 0u)
++        std::fprintf(stderr, "droidvm-umd: unbounded GPU waits enabled (legacy behaviour)\n");
++    }
++
++  }
++
++  uint32_t umdWaitTimeoutMs() {
++    umdLoadWaitTimeout();
++    return g_umdWaitTimeoutMs.load();
++  }
++
++  uint64_t umdWaitTimeoutNs() {
++    uint32_t timeoutMs = umdWaitTimeoutMs();
++    return timeoutMs ? uint64_t(timeoutMs) * 1'000'000ull : 0ull;
++  }
++
++  bool umdDeviceLost() {
++    return g_umdDeviceLost.load(std::memory_order_acquire);
++  }
++
++  void umdMarkDeviceLost(const char* reason) {
++    if (g_umdDeviceLost.exchange(true, std::memory_order_acq_rel))
++      return;
++
++    Logger::err(str::format("DxvkDevice: GPU wait timed out (",
++      umdWaitTimeoutMs(), " ms): ", reason ? reason : "unknown"));
++
++    auto callback = g_umdLostCallback.exchange(nullptr, std::memory_order_acq_rel);
++
++    if (callback)
++      callback(g_umdLostCallbackCtx.load());
++  }
++
++  void umdSetDeviceLostCallback(void (*callback)(void* ctx), void* ctx) {
++    g_umdLostCallbackCtx.store(ctx);
++    g_umdLostCallback.store(callback);
++  }
++
+   DxvkDevice::DxvkDevice(
+     const Rc<DxvkInstance>&         instance,
+     const Rc<DxvkAdapter>&          adapter,
+@@ -696,7 +769,16 @@ namespace dxvk {
+   
+   
+   void DxvkDevice::waitForIdle() {
++    /* Never enter Vulkan after a wait deadline expired: the device is
++     * latched as removed, and vkDeviceWaitIdle would block forever. */
++    if (umdDeviceLost())
++      return;
++
+     m_submissionQueue.waitForIdle();
++
++    if (umdDeviceLost())
++      return;
++
+     m_submissionQueue.lockDeviceQueue();
+ 
+     if (m_vkd->vkDeviceWaitIdle(m_vkd->device()) != VK_SUCCESS)
+diff --git a/src/dxvk/dxvk_fence.cpp b/src/dxvk/dxvk_fence.cpp
+index 09ec165..e2fab01 100644
+--- a/src/dxvk/dxvk_fence.cpp
++++ b/src/dxvk/dxvk_fence.cpp
+@@ -1,5 +1,8 @@
+ #include "dxvk_device.h"
+ #include "dxvk_fence.h"
++#include "dxvk_umd_wait.h"
++
++#include <chrono>
+ 
+ namespace dxvk {
+ 
+@@ -100,12 +103,45 @@ namespace dxvk {
+   }
+ 
+   void DxvkFence::wait(uint64_t value) {
++    /* D3D11 fences are waited on from the D3D11 caller (Map, SetEventOnCompletion,
++     * present throttling). After a host side context kill the semaphore is never
++     * signalled, so the wait must be bounded by the UMD wait policy. */
++    if (umdDeviceLost())
++      return;
++
+     VkSemaphoreWaitInfo waitInfo = { VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO };
+     waitInfo.semaphoreCount = 1;
+     waitInfo.pSemaphores = &m_semaphore;
+     waitInfo.pValues = &value;
+-    VkResult vr = m_vkd->vkWaitSemaphores(
+-      m_vkd->device(), &waitInfo, ~0ull);
++
++    uint64_t timeoutNs = umdWaitTimeoutNs();
++    VkResult vr;
++
++    if (!timeoutNs) {
++      vr = m_vkd->vkWaitSemaphores(
++        m_vkd->device(), &waitInfo, ~0ull);
++    } else {
++      auto start = std::chrono::steady_clock::now();
++
++      while (true) {
++        vr = m_vkd->vkWaitSemaphores(
++          m_vkd->device(), &waitInfo, 100'000'000ull);
++
++        if (vr != VK_TIMEOUT)
++          break;
++
++        if (umdDeviceLost())
++          return;
++
++        auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
++          std::chrono::steady_clock::now() - start).count();
++
++        if (uint64_t(elapsed) >= timeoutNs) {
++          umdMarkDeviceLost("fence wait");
++          break;
++        }
++      }
++    }
+ 
+     if (vr != VK_SUCCESS) {
+       Logger::err(str::format("Failed to wait for semaphore: ", vr));
+diff --git a/src/dxvk/dxvk_queue.cpp b/src/dxvk/dxvk_queue.cpp
+index e705ed9..84c7418 100644
+--- a/src/dxvk/dxvk_queue.cpp
++++ b/src/dxvk/dxvk_queue.cpp
+@@ -1,5 +1,6 @@
+ #include "dxvk_device.h"
+ #include "dxvk_queue.h"
++#include "dxvk_umd_wait.h"
+ 
+ namespace dxvk {
+   
+@@ -50,9 +51,31 @@ namespace dxvk {
+           DxvkSubmitStatus*         status) {
+     std::unique_lock<dxvk::mutex> lock(m_mutex);
+ 
+-    m_finishCond.wait(lock, [this] {
++    /* A removed device must not accept work again: report the loss to the
++     * caller without touching the queue or the GPU. */
++    if (umdDeviceLost()) {
++      if (status)
++        status->result = VK_ERROR_DEVICE_LOST;
++      return;
++    }
++
++    auto hasCapacity = [this] {
+       return m_submitQueue.size() + m_finishQueue.size() <= MaxNumQueuedCommandBuffers;
+-    });
++    };
++
++    uint32_t timeoutMs = umdWaitTimeoutMs();
++
++    if (!timeoutMs) {
++      m_finishCond.wait(lock, hasCapacity);
++    } else if (!m_finishCond.wait_for(lock, std::chrono::milliseconds(timeoutMs), hasCapacity)) {
++      /* Neither queue moved for the whole deadline, which means the host
++       * stopped retiring command buffers. Blocking here is what made the
++       * first draw after a CU-group kill hang forever, so fail instead. */
++      if (status)
++        status->result = VK_ERROR_DEVICE_LOST;
++      umdMarkDeviceLost("submission queue full");
++      return;
++    }
+ 
+     DxvkSubmitEntry entry = { };
+     entry.status = status;
+@@ -70,6 +93,12 @@ namespace dxvk {
+           DxvkSubmitStatus*         status) {
+     std::unique_lock<dxvk::mutex> lock(m_mutex);
+ 
++    if (umdDeviceLost()) {
++      if (status)
++        status->result = VK_ERROR_DEVICE_LOST;
++      return;
++    }
++
+     DxvkSubmitEntry entry = { };
+     entry.status  = status;
+     entry.present = std::move(presentInfo);
+@@ -84,31 +113,69 @@ namespace dxvk {
+           DxvkSubmitStatus*   status) {
+     std::unique_lock<dxvk::mutex> lock(m_mutex);
+ 
+-    m_submitCond.wait(lock, [status] {
++    auto isComplete = [status] {
+       return status->result.load() != VK_NOT_READY;
+-    });
++    };
++
++    if (umdDeviceLost()) {
++      status->result = VK_ERROR_DEVICE_LOST;
++      return;
++    }
++
++    uint32_t timeoutMs = umdWaitTimeoutMs();
++
++    if (!timeoutMs) {
++      m_submitCond.wait(lock, isComplete);
++    } else if (!m_submitCond.wait_for(lock, std::chrono::milliseconds(timeoutMs), isComplete)) {
++      status->result = VK_ERROR_DEVICE_LOST;
++      umdMarkDeviceLost("submission wait");
++    }
+   }
+ 
+ 
+   void DxvkSubmissionQueue::synchronize() {
+     std::unique_lock<dxvk::mutex> lock(m_mutex);
+ 
+-    m_submitCond.wait(lock, [this] {
++    auto isEmpty = [this] {
+       return m_submitQueue.empty();
+-    });
++    };
++
++    uint32_t timeoutMs = umdWaitTimeoutMs();
++
++    if (!timeoutMs) {
++      m_submitCond.wait(lock, isEmpty);
++    } else if (!m_submitCond.wait_for(lock, std::chrono::milliseconds(timeoutMs), isEmpty)) {
++      umdMarkDeviceLost("synchronize");
++    }
+   }
+ 
+ 
+   void DxvkSubmissionQueue::waitForIdle() {
+     std::unique_lock<dxvk::mutex> lock(m_mutex);
+ 
+-    m_submitCond.wait(lock, [this] {
++    auto submitEmpty = [this] {
+       return m_submitQueue.empty();
+-    });
++    };
+ 
+-    m_finishCond.wait(lock, [this] {
++    auto finishEmpty = [this] {
+       return m_finishQueue.empty();
+-    });
++    };
++
++    uint32_t timeoutMs = umdWaitTimeoutMs();
++
++    if (!timeoutMs) {
++      m_submitCond.wait(lock, submitEmpty);
++      m_finishCond.wait(lock, finishEmpty);
++      return;
++    }
++
++    if (!m_submitCond.wait_for(lock, std::chrono::milliseconds(timeoutMs), submitEmpty)) {
++      umdMarkDeviceLost("idle wait");
++      return;
++    }
++
++    if (!m_finishCond.wait_for(lock, std::chrono::milliseconds(timeoutMs), finishEmpty))
++      umdMarkDeviceLost("idle wait");
+   }
+ 
+ 
+@@ -150,7 +217,7 @@ namespace dxvk {
+       }
+ 
+       // Submit command buffer to device
+-      if (m_lastError != VK_ERROR_DEVICE_LOST) {
++      if (m_lastError != VK_ERROR_DEVICE_LOST && !umdDeviceLost()) {
+         std::lock_guard<dxvk::mutex> lock(m_mutexQueue);
+ 
+         if (m_callback)
+@@ -265,7 +332,27 @@ namespace dxvk {
+           waitInfo.pSemaphores = semaphores.data();
+           waitInfo.pValues = timelines.data();
+ 
+-          status = vk->vkWaitSemaphores(vk->device(), &waitInfo, ~0ull);
++          uint32_t timeoutMs = umdWaitTimeoutMs();
++
++          if (!timeoutMs) {
++            status = vk->vkWaitSemaphores(vk->device(), &waitInfo, ~0ull);
++          } else {
++            /* Wait in slices so that a device loss latched by another thread
++             * (typically the D3D11 caller whose submit wait expired) also
++             * retires this entry, instead of parking the recycle thread
++             * forever on a fence the host will never signal. */
++            while (true) {
++              status = vk->vkWaitSemaphores(vk->device(), &waitInfo, 100'000'000ull);
++
++              if (status != VK_TIMEOUT)
++                break;
++
++              if (umdDeviceLost() || m_lastError.load() == VK_ERROR_DEVICE_LOST) {
++                status = VK_ERROR_DEVICE_LOST;
++                break;
++              }
++            }
++          }
+ 
+           if (entry.latency.tracker && status == VK_SUCCESS)
+             entry.latency.tracker->notifyGpuExecutionEnd(entry.latency.frameId);
+diff --git a/src/dxvk/dxvk_queue.h b/src/dxvk/dxvk_queue.h
+index 5e05690..b20948e 100644
+--- a/src/dxvk/dxvk_queue.h
++++ b/src/dxvk/dxvk_queue.h
+@@ -9,6 +9,7 @@
+ #include "dxvk_cmdlist.h"
+ #include "dxvk_latency.h"
+ #include "dxvk_presenter.h"
++#include "dxvk_umd_wait.h"
+ 
+ namespace dxvk {
+   
+@@ -168,7 +169,19 @@ namespace dxvk {
+     template<typename Pred>
+     void synchronizeUntil(const Pred& pred) {
+       std::unique_lock<dxvk::mutex> lock(m_mutex);
+-      m_finishCond.wait(lock, pred);
++
++      if (umdDeviceLost())
++        return;
++
++      uint32_t timeoutMs = umdWaitTimeoutMs();
++
++      if (!timeoutMs) {
++        m_finishCond.wait(lock, pred);
++      } else if (!m_finishCond.wait_for(lock, std::chrono::milliseconds(timeoutMs), pred)) {
++        /* Used by DxvkDevice::waitForResource from the D3D11 caller, e.g. when
++         * mapping a staging buffer. Never block past the deadline. */
++        umdMarkDeviceLost("resource wait");
++      }
+     }
+ 
+     /**
+diff --git a/src/dxvk/dxvk_umd_wait.h b/src/dxvk/dxvk_umd_wait.h
+new file mode 100644
+index 0000000..2fa4e8d
+--- /dev/null
++++ b/src/dxvk/dxvk_umd_wait.h
+@@ -0,0 +1,53 @@
++#pragma once
++
++#include <cstdint>
++
++namespace dxvk {
++
++  /**
++   * \brief Droid-VM UMD wait policy
++   *
++   * The virtio host renderer can kill a GPU context (tiler heap reclaim on
++   * Mali) without the transport ever reporting an error: submissions still
++   * succeed, but the fences they refer to are never signalled.  Every
++   * unbounded vkWaitSemaphores / condition variable wait below would then
++   * block the D3D11 caller forever.
++   *
++   * All such waits are funnelled through the deadline returned by
++   * umdWaitTimeoutMs().  When a deadline expires the device is latched as
++   * lost and the UMD layer turns that into
++   * DXGI_ERROR_DEVICE_REMOVED for the D3D11 runtime.
++   */
++
++  /**
++   * \brief Wait deadline in milliseconds
++   *
++   * DROIDVM_UMD_WAIT_TIMEOUT_MS overrides the default of 3000 ms.
++   * A value of 0 restores the legacy unbounded behaviour.
++   */
++  uint32_t umdWaitTimeoutMs();
++
++  /**
++   * \brief Wait deadline in nanoseconds, 0 if unbounded
++   */
++  uint64_t umdWaitTimeoutNs();
++
++  /**
++   * \brief Checks whether the process-wide device lost latch is set
++   */
++  bool umdDeviceLost();
++
++  /**
++   * \brief Latches device loss and notifies the UMD layer once
++   */
++  void umdMarkDeviceLost(const char* reason);
++
++  /**
++   * \brief Installs the UMD notification callback
++   *
++   * The callback is run exactly once, right after the latch is set, from
++   * whichever thread detected the timeout.
++   */
++  void umdSetDeviceLostCallback(void (*callback)(void* ctx), void* ctx);
++
++}

@@ -108,9 +108,11 @@ jobs:
           git -C umd apply "$GITHUB_WORKSPACE/patches/umd-ddi-table-init.patch"
           git -C umd apply "$GITHUB_WORKSPACE/patches/triton-rgb32-clamp.patch"
           git -C umd apply "$GITHUB_WORKSPACE/patches/triton-d3d11-0-only.patch"
+          git -C umd apply "$GITHUB_WORKSPACE/patches/umd-wait-timeout.patch"
           git -C umd/thirdparty/dxvk apply "$GITHUB_WORKSPACE/patches/dxvk-relax-required.patch"
           git -C umd/thirdparty/dxvk apply "$GITHUB_WORKSPACE/patches/dxvk-log-integer-rt.patch"
           git -C umd/thirdparty/dxvk apply "$GITHUB_WORKSPACE/patches/dxvk-bridge-integer-rt-outputs.patch"
+          git -C umd/thirdparty/dxvk apply "$GITHUB_WORKSPACE/patches/dxvk-wait-timeout.patch"
 
           echo "--- dxvk patch stack ---"
           git -C umd/thirdparty/dxvk diff --stat
